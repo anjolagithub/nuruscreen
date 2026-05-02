@@ -11,7 +11,8 @@ export default function ChildDetailPage() {
   const router = useRouter(); const params = useParams();
   const [child, setChild] = useState<Child | null>(null);
   const [screenings, setScreenings] = useState<Screening[]>([]);
-  useEffect(() => { const id = params.id as string; getChild(id).then(setChild); getScreeningsForChild(id).then(setScreenings); }, [params.id]);
+  useEffect(() => { const id = params.id as string; getChild(id).then(data => setChild(data ?? null));
+ getScreeningsForChild(id).then(setScreenings); }, [params.id]);
   if (!child) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100dvh' }}><div className="spinner" style={{ borderTopColor:'var(--forest)', borderColor:'var(--stone-200)' }} /></div>;
   const last = screenings[0]; const rl = last?.riskLevel;
   return (
