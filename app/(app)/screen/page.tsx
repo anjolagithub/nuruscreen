@@ -359,7 +359,7 @@ function ScreenInner() {
 
         {/* Guide overlay */}
         {phase === 'guide' && (
-          <div style={{ position:'absolute', inset:0, zIndex:10, display:'flex', flexDirection:'column', padding:24, justifyContent:'space-between', background:'rgba(0,0,0,0.45)' }}>
+          <div style={{ position:'absolute', inset:0, zIndex:10, display:'flex', flexDirection:'column', padding:24, paddingBottom:40, justifyContent:'space-between', background:'rgba(0,0,0,0.45)' }}>
             <div style={{ color:'white' }}>
               <p style={{ margin:'0 0 4px', opacity:0.75, fontSize:13 }}>Screening</p>
               <h2 style={{ margin:0, fontSize:22, fontWeight:700 }}>{selectedChild?.name}</h2>
