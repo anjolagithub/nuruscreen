@@ -14,26 +14,41 @@ function getWorker() {
 function ScreenInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream|null>(null);
-  const poseRef = useRef<any>(null);
-  const bufferRef = useRef(new MUACReadingBuffer(12));
+  const videoRef    = useRef<HTMLVideoElement>(null);
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const streamRef   = useRef<MediaStream|null>(null);
+  const poseRef     = useRef<any>(null);
+  const bufferRef   = useRef(new MUACReadingBuffer(12));
   const animFrameRef = useRef<number>(0);
-  const phaseRef = useRef<Phase>('select-child');
+  // FIX: use a ref for phase inside the rAF loop so it always reads current value
+  const phaseRef    = useRef<Phase>('select-child');
+  const isRunningRef = useRef(false); // FIX: guard against double-starting the loop
 
-  const [phase, setPhase] = useState<Phase>('select-child');
-  const [children, setChildren] = useState<Child[]>([]);
+  const [phase, setPhase]             = useState<Phase>('select-child');
+  const [children, setChildren]       = useState<Child[]>([]);
   const [selectedChild, setSelectedChild] = useState<Child|null>(null);
-  const [liveValue, setLiveValue] = useState<number|null>(null);
+  const [liveValue, setLiveValue]     = useState<number|null>(null);
   const [stableValue, setStableValue] = useState<number|null>(null);
   const [armDetected, setArmDetected] = useState(false);
-  const [confidence, setConfidence] = useState(0);
-  const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [modelError, setModelError] = useState<string|null>(null);
+  const [confidence, setConfidence]   = useState(0);
+  const [notes, setNotes]             = useState('');
+  const [saving, setSaving]           = useState(false);
+  const [modelError, setModelError]   = useState<string|null>(null);
 
-  const sp = (p: Phase) => { phaseRef.current = p; setPhase(p); };
+  const sp = useCallback((p: Phase) => { phaseRef.current = p; setPhase(p); }, []);
+
+  // FIX: define cleanup before any useEffect that references it
+  const cleanup = useCallback(() => {
+    isRunningRef.current = false;
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = 0;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const worker = getWorker();
@@ -47,20 +62,102 @@ function ScreenInner() {
       const c = children.find(x => x.id === id);
       if (c) { setSelectedChild(c); sp('loading-model'); }
     }
-  }, [searchParams, children]);
+  }, [searchParams, children, sp]);
 
+  // FIX: cleanup is now defined before this effect
   useEffect(() => {
     if (phase !== 'loading-model') return;
     loadMediaPipe();
     return cleanup;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  const cleanup = () => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    streamRef.current?.getTracks().forEach(t => t.stop());
-  };
+  const onPoseResults = useCallback((results: any) => {
+    const canvas = canvasRef.current;
+    const video  = videoRef.current;
+    if (!canvas || !video) return;
+
+    const ctx = canvas.getContext('2d')!;
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    ctx.drawImage(video, 0, 0);
+
+    if (!results.poseLandmarks) { setArmDetected(false); return; }
+
+    const est = estimateMUACFromLandmarks(
+      results.poseLandmarks, canvas.width, canvas.height
+    );
+
+    setArmDetected(est.armDetected);
+    setConfidence(est.confidence);
+
+    if (est.muacCm !== null && est.confidence > 0.6) {
+      bufferRef.current.add(est.muacCm);
+      const sm = bufferRef.current.getSmoothed();
+      if (sm !== null) {
+        setLiveValue(sm);
+
+        // Draw arm overlay
+        if (est.armDetected && est.side) {
+          const lms = results.poseLandmarks;
+          const s   = est.side;
+          const eI  = s==='left'?13:14, wI = s==='left'?15:16, shI = s==='left'?11:12;
+          ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(lms[shI].x*canvas.width, lms[shI].y*canvas.height);
+          ctx.lineTo(lms[eI].x*canvas.width,  lms[eI].y*canvas.height);
+          ctx.lineTo(lms[wI].x*canvas.width,  lms[wI].y*canvas.height);
+          ctx.stroke();
+          const mx = ((lms[shI].x+lms[eI].x)/2)*canvas.width;
+          const my = ((lms[shI].y+lms[eI].y)/2)*canvas.height;
+          ctx.beginPath(); ctx.arc(mx, my, 12, 0, Math.PI*2);
+          ctx.fillStyle   = 'rgba(34,197,94,0.3)'; ctx.fill();
+          ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 3; ctx.stroke();
+        }
+
+        // FIX: read phase from ref so the rAF closure always sees current phase
+        if (bufferRef.current.isStable() && phaseRef.current === 'scanning') {
+          setStableValue(sm);
+          sp('stable');
+        }
+      }
+    }
+  }, [sp]);
+
+  // FIX: processFrame is now a stable callback; guard prevents double-start
+  const processFrame = useCallback(() => {
+    if (!isRunningRef.current) return;
+    const video = videoRef.current;
+    const pose  = poseRef.current;
+
+    if (!video || !pose) {
+      animFrameRef.current = requestAnimationFrame(processFrame);
+      return;
+    }
+
+    // FIX: wait for video to be fully ready before attempting detection
+    if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA ||
+        video.paused || video.ended) {
+      animFrameRef.current = requestAnimationFrame(processFrame);
+      return;
+    }
+
+    try {
+      const results = pose.detectForVideo(video, performance.now());
+      if (results.landmarks && results.landmarks[0]) {
+        onPoseResults({ poseLandmarks: results.landmarks[0] });
+      } else {
+        setArmDetected(false);
+      }
+    } catch (e) {
+      console.error('Detection error:', e);
+    }
+
+    animFrameRef.current = requestAnimationFrame(processFrame);
+  }, [onPoseResults]);
 
   const loadMediaPipe = async () => {
+    setModelError(null);
     try {
       const { PoseLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision');
 
@@ -79,101 +176,103 @@ function ScreenInner() {
 
       poseRef.current = poseLandmarker;
 
-      // Try environment camera first (back camera on phone), fall back to any camera
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
-        });
-      } catch {
+      // Detect mobile — use lower resolution to save memory and speed up Android
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+      // Three-tier camera fallback for maximum device compatibility
+      let stream: MediaStream | null = null;
+      const cameraAttempts = [
+        { facingMode: { ideal: 'environment' }, width: { ideal: isMobile ? 640 : 1280 }, height: { ideal: isMobile ? 480 : 720 } },
+        { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+        { facingMode: 'user' }, // Last resort: front camera
+      ];
+
+      for (const constraints of cameraAttempts) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        } catch (camErr: any) {
-          setModelError(`Camera blocked: ${camErr.message}. Please allow camera access.`);
-          return;
+          stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+          break;
+        } catch (e: any) {
+          if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+            setModelError('Camera permission denied.\n\nOn your phone: go to browser Settings → Site Settings → Camera and allow this site.');
+            return;
+          }
+          continue; // OverconstrainedError, NotFoundError — try next fallback
         }
       }
 
+      if (!stream) { setModelError('No camera found on this device.'); return; }
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current!.play()
-            .then(() => sp('guide'))
-            .catch(err => setModelError('Camera play failed: ' + err.message));
+
+      if (!videoRef.current) { setModelError('Video element not ready. Please try again.'); return; }
+
+      const video = videoRef.current;
+      // Safari iOS requires these set before srcObject
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('muted', 'true');
+      video.muted = true;
+      video.srcObject = stream;
+
+      // Wait for video ready — Chromium + Safari + Firefox Mobile all handled
+      const tapToStartNeeded = await new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          // Timeout: try playing anyway, mobile may just be slow
+          video.play().then(() => resolve(false)).catch(() => resolve(true));
+        }, 12000);
+
+        let done = false;
+        const tryPlay = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timeout);
+          video.play()
+            .then(() => resolve(false))
+            .catch((e: any) => {
+              // Safari blocked autoplay — need user tap gesture
+              resolve(e.name === 'NotAllowedError');
+            });
         };
+
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) { tryPlay(); return; }
+        video.onloadedmetadata = tryPlay;
+        video.oncanplay = tryPlay;
+        video.onerror = () => { clearTimeout(timeout); resolve(true); };
+      });
+
+      // Even if Safari blocked autoplay, go to guide — "Start Scanning" tap will trigger play()
+      if (tapToStartNeeded) {
+        // Store a flag so startScanning() calls play() before the rAF loop
+        (videoRef.current as any)._needsPlay = true;
       }
+
+      sp('guide');
+
     } catch (err: any) {
-      console.error('MediaPipe error:', err);
-      setModelError(err?.message ?? 'Model failed to load');
+      console.error('MediaPipe load error:', err);
+      setModelError(err?.message ?? 'Model failed to load. Check your internet connection for first load.');
     }
   };
 
-  const onPoseResults = useCallback((results: any) => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
-    const ctx = canvas.getContext('2d')!;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-    if (!results.poseLandmarks) { setArmDetected(false); return; }
-    const est = estimateMUACFromLandmarks(results.poseLandmarks, canvas.width, canvas.height);
-    setArmDetected(est.armDetected);
-    setConfidence(est.confidence);
-    if (est.muacCm !== null && est.confidence > 0.6) {
-      bufferRef.current.add(est.muacCm);
-      const sm = bufferRef.current.getSmoothed();
-      if (sm !== null) {
-        setLiveValue(sm);
-        if (est.armDetected && est.side) {
-          const lms = results.poseLandmarks;
-          const s = est.side;
-          const eI = s==='left'?13:14, wI = s==='left'?15:16, shI = s==='left'?11:12;
-          ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-          ctx.beginPath();
-          ctx.moveTo(lms[shI].x*canvas.width, lms[shI].y*canvas.height);
-          ctx.lineTo(lms[eI].x*canvas.width, lms[eI].y*canvas.height);
-          ctx.lineTo(lms[wI].x*canvas.width, lms[wI].y*canvas.height);
-          ctx.stroke();
-          const mx = ((lms[shI].x+lms[eI].x)/2)*canvas.width;
-          const my = ((lms[shI].y+lms[eI].y)/2)*canvas.height;
-          ctx.beginPath(); ctx.arc(mx, my, 12, 0, Math.PI*2);
-          ctx.fillStyle = 'rgba(34,197,94,0.3)'; ctx.fill();
-          ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 3; ctx.stroke();
-        }
-        if (bufferRef.current.isStable() && phaseRef.current === 'scanning') {
-          setStableValue(sm);
-          sp('stable');
-        }
-      }
-    }
-  }, []);
-
-  const processFrame = useCallback(() => {
-    if (!videoRef.current || !poseRef.current) return;
-    if (videoRef.current.readyState < 2) {
-      animFrameRef.current = requestAnimationFrame(processFrame);
-      return;
-    }
-    try {
-      const results = poseRef.current.detectForVideo(videoRef.current, performance.now());
-      if (results.landmarks && results.landmarks[0]) {
-        onPoseResults({ poseLandmarks: results.landmarks[0] });
-      } else {
-        setArmDetected(false);
-      }
-    } catch (e) {
-      console.error('Detection error:', e);
-    }
-    animFrameRef.current = requestAnimationFrame(processFrame);
-  }, [onPoseResults]);
-
-  const startScanning = () => {
+  const startScanning = useCallback(async () => {
     sp('scanning');
     bufferRef.current.reset();
-    processFrame();
-  };
+
+    // Safari iOS: if video couldn't autoplay, play() must be called inside a user gesture
+    // "Start Scanning" button tap IS a user gesture — so we call play() here
+    const video = videoRef.current;
+    if (video && (video as any)._needsPlay) {
+      try {
+        await video.play();
+        (video as any)._needsPlay = false;
+      } catch (e) {
+        console.warn('Video play on tap failed:', e);
+      }
+    }
+
+    if (!isRunningRef.current) {
+      isRunningRef.current = true;
+      animFrameRef.current = requestAnimationFrame(processFrame);
+    }
+  }, [sp, processFrame]);
 
   const handleSave = async () => {
     if (!selectedChild || stableValue === null) return;
@@ -181,20 +280,22 @@ function ScreenInner() {
     const worker = getWorker();
     const s: Screening = {
       id: `scr_${Date.now()}_${Math.random().toString(36).slice(2,9)}`,
-      childId: selectedChild.id,
-      muacCm: parseFloat(stableValue.toFixed(1)),
-      riskLevel: classifyMUAC(stableValue),
-      notes: notes.trim(),
-      screenedAt: Date.now(),
-      healthWorkerId: worker?.id ?? 'unknown',
-      synced: false,
+      childId:         selectedChild.id,
+      muacCm:          parseFloat(stableValue.toFixed(1)),
+      riskLevel:       classifyMUAC(stableValue),
+      notes:           notes.trim(),
+      screenedAt:      Date.now(),
+      healthWorkerId:  worker?.id ?? 'unknown',
+      synced:          false,
     };
     try { await saveScreening(s); } catch (e) { console.error('Save error:', e); }
     sp('saved');
+    setSaving(false);
   };
 
   const rl: RiskLevel = stableValue !== null ? classifyMUAC(stableValue) : 'unknown';
 
+  // ── SELECT CHILD ──────────────────────────────────────────────────
   if (phase === 'select-child') return (
     <div>
       <div className="page-header">
@@ -206,9 +307,15 @@ function ScreenInner() {
           + Register New Child
         </button>
         {children.length === 0
-          ? <div className="empty-state"><div style={{ fontSize:40, marginBottom:12 }}>👶</div><p style={{ margin:0, fontWeight:600 }}>No children registered yet</p></div>
+          ? (
+            <div className="empty-state">
+              <div style={{ fontSize:40, marginBottom:12 }}>👶</div>
+              <p style={{ margin:0, fontWeight:600 }}>No children registered yet</p>
+            </div>
+          )
           : children.map(child => (
-            <button key={child.id} onClick={() => { setSelectedChild(child); sp('loading-model'); }}
+            <button key={child.id}
+              onClick={() => { setSelectedChild(child); sp('loading-model'); }}
               style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 16px', background:'white', border:'1.5px solid var(--stone-200)', borderRadius:12, cursor:'pointer', textAlign:'left', width:'100%', marginBottom:8 }}>
               <div style={{ width:40, height:40, borderRadius:'50%', background:child.sex==='female'?'#fce7f3':'#dbeafe', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>
                 {child.sex==='female'?'👧':'👦'}
@@ -225,16 +332,31 @@ function ScreenInner() {
     </div>
   );
 
+  // ── LOADING MODEL ─────────────────────────────────────────────────
   if (phase === 'loading-model') return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', gap:16, background:'var(--forest)', color:'white', padding:24, textAlign:'center' }}>
-      <div className="spinner" />
-      <p style={{ margin:0, fontWeight:600 }}>Loading AI model...</p>
-      <p style={{ margin:0, fontSize:13, opacity:0.7 }}>First use takes 30-60 seconds</p>
+      {!modelError && (
+        <>
+          <div className="spinner" />
+          <p style={{ margin:0, fontWeight:600 }}>Loading AI model...</p>
+          <p style={{ margin:0, fontSize:13, opacity:0.7 }}>First use takes 30–60s to download</p>
+          <p style={{ margin:0, fontSize:12, opacity:0.5 }}>Subsequent loads are instant (cached)</p>
+        </>
+      )}
+      {/* FIX: visibility:hidden not display:none — Chromium won't fire onloadedmetadata on display:none */}
+      <video ref={videoRef} style={{ position:'fixed', top:'-9999px', left:'-9999px', width:1, height:1, opacity:0, pointerEvents:'none' }} playsInline muted autoPlay />
       {modelError && (
-        <div style={{ background:'rgba(220,38,38,0.2)', padding:'16px 20px', borderRadius:10, maxWidth:300 }}>
-          <p style={{ margin:'0 0 12px', fontSize:14 }}>{modelError}</p>
-          <button onClick={() => { setModelError(null); sp('select-child'); }}
-            style={{ padding:'10px 20px', background:'white', color:'var(--forest)', border:'none', borderRadius:8, fontWeight:600, cursor:'pointer' }}>
+        <div style={{ background:'rgba(220,38,38,0.2)', padding:'20px 24px', borderRadius:12, maxWidth:320 }}>
+          <p style={{ margin:'0 0 6px', fontWeight:700, fontSize:15 }}>⚠ Setup Error</p>
+          <p style={{ margin:'0 0 16px', fontSize:14, lineHeight:1.6, opacity:0.9 }}>{modelError}</p>
+          <button
+            onClick={() => { setModelError(null); loadMediaPipe(); }}
+            style={{ padding:'10px 20px', background:'white', color:'var(--forest)', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', marginRight:10 }}>
+            Retry
+          </button>
+          <button
+            onClick={() => { cleanup(); sp('select-child'); }}
+            style={{ padding:'10px 20px', background:'transparent', color:'white', border:'1px solid rgba(255,255,255,0.4)', borderRadius:8, fontWeight:600, cursor:'pointer' }}>
             Go Back
           </button>
         </div>
@@ -242,9 +364,11 @@ function ScreenInner() {
     </div>
   );
 
+  // ── GUIDE ─────────────────────────────────────────────────────────
   if (phase === 'guide') return (
     <div style={{ background:'#000', minHeight:'100dvh', color:'white', display:'flex', flexDirection:'column', position:'relative' }}>
-      <video ref={videoRef} style={{ position:'absolute', opacity:0.4, width:'100%', height:'100%', objectFit:'cover' }} playsInline muted autoPlay />
+      {/* FIX: video must be visible (not display:none) in guide phase so stream stays active */}
+      <video ref={videoRef} style={{ position:'absolute', opacity:0.35, width:'100%', height:'100%', objectFit:'cover' }} playsInline muted autoPlay />
       <div style={{ position:'relative', zIndex:10, flex:1, display:'flex', flexDirection:'column', padding:24, justifyContent:'space-between' }}>
         <div>
           <p style={{ margin:'0 0 4px', opacity:0.7, fontSize:13 }}>Screening</p>
@@ -254,28 +378,40 @@ function ScreenInner() {
           <h3 style={{ margin:'0 0 16px', fontSize:18, fontWeight:700 }}>How to position</h3>
           {[
             '📏 Extend arm straight out to the side',
-            '📱 Hold phone 40-60cm from arm',
+            '📱 Hold phone 40–60cm from arm',
             '💡 Ensure good lighting on the arm',
             '🎯 Show full arm: shoulder to wrist in frame',
-          ].map((s,i) => <div key={i} style={{ fontSize:14, lineHeight:1.7, marginBottom:6 }}>{s}</div>)}
+          ].map((s,i) => (
+            <div key={i} style={{ fontSize:14, lineHeight:1.7, marginBottom:6 }}>{s}</div>
+          ))}
         </div>
-        <button className="btn-primary" onClick={startScanning}>Start Scanning →</button>
+        <button className="btn-primary" onClick={startScanning}>
+          Start Scanning →
+        </button>
       </div>
     </div>
   );
 
+  // ── SCANNING / STABLE ─────────────────────────────────────────────
   if (phase === 'scanning' || phase === 'stable') return (
     <div style={{ background:'#000', minHeight:'100dvh', position:'relative', overflow:'hidden' }}>
+      {/* Canvas shows processed frames; video offscreen not display:none */}
       <canvas ref={canvasRef} style={{ width:'100%', height:'100%', objectFit:'cover', position:'absolute', inset:0 }} />
-      <video ref={videoRef} style={{ display:'none' }} playsInline muted autoPlay />
+      <video ref={videoRef} style={{ position:'fixed', top:'-9999px', left:'-9999px', width:1, height:1, opacity:0, pointerEvents:'none' }} playsInline muted autoPlay />
+
+      {/* Top status bar */}
       <div style={{ position:'absolute', top:0, left:0, right:0, background:'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)', padding:'20px 20px 40px', color:'white', zIndex:20 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <p style={{ margin:0, fontWeight:600 }}>{armDetected ? '✅ Arm detected' : '🔍 Looking for arm...'}</p>
+          <p style={{ margin:0, fontWeight:600 }}>
+            {armDetected ? '✅ Arm detected' : '🔍 Looking for arm...'}
+          </p>
           <div style={{ background:armDetected?'rgba(34,197,94,0.3)':'rgba(255,255,255,0.15)', border:`1px solid ${armDetected?'#22c55e':'rgba(255,255,255,0.3)'}`, borderRadius:20, padding:'6px 14px', fontSize:13, fontWeight:600 }}>
             {Math.round(confidence*100)}%
           </div>
         </div>
       </div>
+
+      {/* Bottom results bar */}
       <div style={{ position:'absolute', bottom:0, left:0, right:0, background:'linear-gradient(to top, rgba(0,0,0,0.85), transparent)', padding:'48px 24px 40px', color:'white', zIndex:20 }}>
         {liveValue !== null && (
           <div style={{ textAlign:'center', marginBottom:20 }}>
@@ -302,6 +438,7 @@ function ScreenInner() {
     </div>
   );
 
+  // ── RESULT ────────────────────────────────────────────────────────
   if (phase === 'result') return (
     <div>
       <div className="page-header">
@@ -316,9 +453,9 @@ function ScreenInner() {
         </div>
         <div className="card card-padded">
           <p className="form-label" style={{ marginBottom:10 }}>Recommended Action</p>
-          {rl === 'green' && <p style={{ margin:0, fontSize:14, lineHeight:1.6 }}>Child is well nourished. Schedule next screening in 3 months.</p>}
-          {rl === 'yellow' && <p style={{ margin:0, fontSize:14, lineHeight:1.6, color:'var(--risk-yellow)' }}>⚠️ Moderate acute malnutrition. Enrol in supplementary feeding. Re-screen in 4 weeks.</p>}
-          {rl === 'red' && <p style={{ margin:0, fontSize:14, lineHeight:1.6, color:'var(--risk-red)' }}>🚨 Severe acute malnutrition. Refer immediately to therapeutic feeding centre.</p>}
+          {rl==='green'  && <p style={{ margin:0, fontSize:14, lineHeight:1.6 }}>Child is well nourished. Schedule next screening in 3 months.</p>}
+          {rl==='yellow' && <p style={{ margin:0, fontSize:14, lineHeight:1.6, color:'var(--risk-yellow)' }}>⚠️ Moderate acute malnutrition. Enrol in supplementary feeding. Re-screen in 4 weeks.</p>}
+          {rl==='red'    && <p style={{ margin:0, fontSize:14, lineHeight:1.6, color:'var(--risk-red)' }}>🚨 Severe acute malnutrition. Refer immediately to therapeutic feeding centre.</p>}
         </div>
         <div>
           <label className="form-label">Notes (optional)</label>
@@ -327,13 +464,18 @@ function ScreenInner() {
         <button className="btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? <div className="spinner" /> : '💾 Save Record'}
         </button>
-        <button className="btn-secondary" onClick={() => { sp('scanning'); processFrame(); }}>
+        <button className="btn-secondary" onClick={() => {
+          bufferRef.current.reset();
+          setLiveValue(null);
+          startScanning();
+        }}>
           Retake Reading
         </button>
       </div>
     </div>
   );
 
+  // ── SAVED ─────────────────────────────────────────────────────────
   if (phase === 'saved') return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', padding:32, textAlign:'center' }}>
       <div style={{ width:80, height:80, borderRadius:'50%', background:'var(--risk-green-bg)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, marginBottom:24 }}>✅</div>
