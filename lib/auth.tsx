@@ -1,28 +1,28 @@
 'use client';
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { HealthWorker } from '@/types';
 
 interface AuthContextType {
-  worker: HealthWorker | null;
-  login: (worker: HealthWorker) => Promise<void>;
-  logout: () => void;
+  worker:    HealthWorker | null;
+  login:     (worker: HealthWorker) => Promise<void>;
+  logout:    () => void;
   isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
-const KEY = 'nuruscreen_worker_id';
+const KEY        = 'nuruscreen_worker_id';
 const WORKER_KEY = 'nuruscreen_worker_data';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [worker, setWorker] = useState<HealthWorker | null>(null);
+  const [worker, setWorker]       = useState<HealthWorker | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const router                    = useRouter();
 
   useEffect(() => {
     try {
       const data = localStorage.getItem(WORKER_KEY);
-      if (data) {
-        setWorker(JSON.parse(data));
-      }
+      if (data) setWorker(JSON.parse(data));
     } catch (e) {
       console.error('Auth load error:', e);
     }
@@ -31,20 +31,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (w: HealthWorker) => {
     try {
-      localStorage.setItem(KEY, w.id);
+      localStorage.setItem(KEY,        w.id);
       localStorage.setItem(WORKER_KEY, JSON.stringify(w));
     } catch (e) {
       console.error('Storage error:', e);
     }
     setWorker(w);
+    // FIX: redirect to dashboard after login instead of landing page
+    router.replace('/dashboard');
   };
 
   const logout = () => {
     try {
       localStorage.removeItem(KEY);
       localStorage.removeItem(WORKER_KEY);
-    } catch (e) {}
+    } catch {}
     setWorker(null);
+    router.replace('/login');
   };
 
   return (
