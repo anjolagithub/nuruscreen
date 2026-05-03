@@ -8,18 +8,25 @@ export default function LoginPage() {
   const [name, setName] = useState('');
   const [facility, setFacility] = useState('');
   const [phone, setPhone] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = () => {
-    if (!name || !facility) return;
+    if (!name.trim() || !facility.trim()) return;
+    setLoading(true);
+
     const worker = {
-      id: `hw_${Date.now()}`,
-      name: name.trim(),
+      id:       `hw_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+      name:     name.trim(),
       facility: facility.trim(),
-      phone: phone.trim(),
+      phone:    phone.trim(),
     };
+
+    // Save to localStorage
     localStorage.setItem('nuruscreen_worker_data', JSON.stringify(worker));
     localStorage.setItem('nuruscreen_worker_id', worker.id);
-    router.push('/dashboard');
+
+    // Hard redirect — bypasses any auth guard middleware loop
+    window.location.href = '/dashboard';
   };
 
   if (step === 'welcome') return (
@@ -32,7 +39,10 @@ export default function LoginPage() {
           <span key={t} style={{ fontSize:12, fontWeight:600, padding:'4px 12px', borderRadius:999, background:'rgba(255,255,255,0.15)' }}>{t}</span>
         ))}
       </div>
-      <button onClick={() => setStep('form')} style={{ width:'100%', maxWidth:300, padding:'16px', background:'white', color:'var(--forest)', border:'none', borderRadius:12, fontSize:16, fontWeight:700, cursor:'pointer' }}>
+      <button
+        onClick={() => setStep('form')}
+        style={{ width:'100%', maxWidth:300, padding:'16px', background:'white', color:'var(--forest)', border:'none', borderRadius:12, fontSize:16, fontWeight:700, cursor:'pointer' }}
+      >
         Get Started
       </button>
     </div>
@@ -79,10 +89,20 @@ export default function LoginPage() {
         </div>
         <button
           onClick={handleSubmit}
-          disabled={!name || !facility}
-          style={{ width:'100%', padding:'16px', background: (!name || !facility) ? 'var(--stone-200)' : 'var(--forest)', color: (!name || !facility) ? 'var(--stone-400)' : 'white', border:'none', borderRadius:12, fontSize:16, fontWeight:700, cursor: (!name || !facility) ? 'not-allowed' : 'pointer' }}
+          disabled={!name.trim() || !facility.trim() || loading}
+          style={{
+            width:'100%', padding:'16px',
+            background: (!name.trim() || !facility.trim() || loading) ? 'var(--stone-200)' : 'var(--forest)',
+            color:      (!name.trim() || !facility.trim() || loading) ? 'var(--stone-400)' : 'white',
+            border:'none', borderRadius:12, fontSize:16, fontWeight:700,
+            cursor: (!name.trim() || !facility.trim() || loading) ? 'not-allowed' : 'pointer',
+            display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+          }}
         >
-          Start Screening →
+          {loading
+            ? <><div style={{ width:18, height:18, border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'white', borderRadius:'50%', animation:'spin 0.8s linear infinite' }} /> Setting up...</>
+            : 'Start Screening →'
+          }
         </button>
         <p style={{ fontSize:13, color:'var(--stone-400)', textAlign:'center' }}>No account needed. Data stays on device.</p>
       </div>
