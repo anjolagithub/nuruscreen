@@ -136,4 +136,4 @@ Registered in Nigeria 🇳🇬
 
 ## Licence
 
-MIT © 2025 [Your Name]
+MIT © 2025
