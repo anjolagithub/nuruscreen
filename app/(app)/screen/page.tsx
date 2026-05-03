@@ -1,15 +1,17 @@
 'use client';
 import { useEffect, useRef, useState, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useAuth } from '@/lib/auth';
 import { getChildren, saveScreening } from '@/lib/db';
 import { MUACReadingBuffer, estimateMUACFromLandmarks } from '@/lib/muac';
 import { RISK_LABELS, RISK_COLORS, classifyMUAC, type Child, type Screening, type RiskLevel } from '@/types';
 
 type Phase = 'select-child'|'loading-model'|'guide'|'scanning'|'stable'|'result'|'saved';
 
+function getWorker() {
+  try { return JSON.parse(localStorage.getItem('nuruscreen_worker_data') || 'null'); } catch { return null; }
+}
+
 function ScreenInner() {
-  const { worker } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -33,7 +35,11 @@ function ScreenInner() {
 
   const sp = (p: Phase) => { phaseRef.current = p; setPhase(p); };
 
-  useEffect(() => { if (worker) getChildren(worker.id).then(setChildren); }, [worker]);
+  useEffect(() => {
+    const worker = getWorker();
+    if (!worker) { router.replace('/login'); return; }
+    getChildren(worker.id).then(setChildren);
+  }, [router]);
 
   useEffect(() => {
     const id = searchParams.get('child');
@@ -73,28 +79,28 @@ function ScreenInner() {
 
       poseRef.current = poseLandmarker;
 
+      // Try environment camera first (back camera on phone), fall back to any camera
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
         });
-      } catch (camErr: any) {
-        console.error('Camera error:', camErr.name, camErr.message);
-        setModelError(`Camera error: ${camErr.name} - ${camErr.message}`);
-        return;
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        } catch (camErr: any) {
+          setModelError(`Camera blocked: ${camErr.message}. Please allow camera access.`);
+          return;
+        }
       }
 
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current!.play().then(() => {
-            console.log('Camera started OK, moving to guide');
-            sp('guide');
-          }).catch(err => {
-            console.error('Play failed:', err);
-            setModelError('Camera play failed: ' + err.message);
-          });
+          videoRef.current!.play()
+            .then(() => sp('guide'))
+            .catch(err => setModelError('Camera play failed: ' + err.message));
         };
       }
     } catch (err: any) {
@@ -150,11 +156,15 @@ function ScreenInner() {
       animFrameRef.current = requestAnimationFrame(processFrame);
       return;
     }
-    const results = poseRef.current.detectForVideo(videoRef.current, performance.now());
-    if (results.landmarks && results.landmarks[0]) {
-      onPoseResults({ poseLandmarks: results.landmarks[0] });
-    } else {
-      setArmDetected(false);
+    try {
+      const results = poseRef.current.detectForVideo(videoRef.current, performance.now());
+      if (results.landmarks && results.landmarks[0]) {
+        onPoseResults({ poseLandmarks: results.landmarks[0] });
+      } else {
+        setArmDetected(false);
+      }
+    } catch (e) {
+      console.error('Detection error:', e);
     }
     animFrameRef.current = requestAnimationFrame(processFrame);
   }, [onPoseResults]);
@@ -166,8 +176,9 @@ function ScreenInner() {
   };
 
   const handleSave = async () => {
-    if (!selectedChild || !worker || stableValue === null) return;
+    if (!selectedChild || stableValue === null) return;
     setSaving(true);
+    const worker = getWorker();
     const s: Screening = {
       id: `scr_${Date.now()}_${Math.random().toString(36).slice(2,9)}`,
       childId: selectedChild.id,
@@ -175,10 +186,10 @@ function ScreenInner() {
       riskLevel: classifyMUAC(stableValue),
       notes: notes.trim(),
       screenedAt: Date.now(),
-      healthWorkerId: worker.id,
+      healthWorkerId: worker?.id ?? 'unknown',
       synced: false,
     };
-    await saveScreening(s);
+    try { await saveScreening(s); } catch (e) { console.error('Save error:', e); }
     sp('saved');
   };
 
@@ -191,13 +202,15 @@ function ScreenInner() {
         <p style={{ margin:'4px 0 0', opacity:0.7, fontSize:14 }}>Select child to screen</p>
       </div>
       <div style={{ padding:'16px 20px' }}>
-        <button className="btn-primary" onClick={() => router.push('/children/new')} style={{ marginBottom:20 }}>+ Register New Child</button>
+        <button className="btn-primary" onClick={() => router.push('/children/new')} style={{ marginBottom:20 }}>
+          + Register New Child
+        </button>
         {children.length === 0
           ? <div className="empty-state"><div style={{ fontSize:40, marginBottom:12 }}>👶</div><p style={{ margin:0, fontWeight:600 }}>No children registered yet</p></div>
           : children.map(child => (
             <button key={child.id} onClick={() => { setSelectedChild(child); sp('loading-model'); }}
               style={{ display:'flex', alignItems:'center', gap:12, padding:'14px 16px', background:'white', border:'1.5px solid var(--stone-200)', borderRadius:12, cursor:'pointer', textAlign:'left', width:'100%', marginBottom:8 }}>
-              <div style={{ width:40, height:40, borderRadius:'50%', background: child.sex==='female'?'#fce7f3':'#dbeafe', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>
+              <div style={{ width:40, height:40, borderRadius:'50%', background:child.sex==='female'?'#fce7f3':'#dbeafe', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>
                 {child.sex==='female'?'👧':'👦'}
               </div>
               <div style={{ flex:1 }}>
@@ -213,14 +226,17 @@ function ScreenInner() {
   );
 
   if (phase === 'loading-model') return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', gap:16, background:'var(--forest)', color:'white' }}>
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', gap:16, background:'var(--forest)', color:'white', padding:24, textAlign:'center' }}>
       <div className="spinner" />
       <p style={{ margin:0, fontWeight:600 }}>Loading AI model...</p>
-      <p style={{ margin:0, fontSize:13, opacity:0.7 }}>First use takes a moment</p>
+      <p style={{ margin:0, fontSize:13, opacity:0.7 }}>First use takes 30-60 seconds</p>
       {modelError && (
-        <div style={{ background:'rgba(220,38,38,0.2)', padding:'12px 20px', borderRadius:10, maxWidth:300, textAlign:'center' }}>
-          <p style={{ margin:0, fontSize:14 }}>{modelError}</p>
-          <button className="btn-secondary" onClick={() => router.back()} style={{ marginTop:12 }}>Go Back</button>
+        <div style={{ background:'rgba(220,38,38,0.2)', padding:'16px 20px', borderRadius:10, maxWidth:300 }}>
+          <p style={{ margin:'0 0 12px', fontSize:14 }}>{modelError}</p>
+          <button onClick={() => { setModelError(null); sp('select-child'); }}
+            style={{ padding:'10px 20px', background:'white', color:'var(--forest)', border:'none', borderRadius:8, fontWeight:600, cursor:'pointer' }}>
+            Go Back
+          </button>
         </div>
       )}
     </div>
@@ -228,7 +244,7 @@ function ScreenInner() {
 
   if (phase === 'guide') return (
     <div style={{ background:'#000', minHeight:'100dvh', color:'white', display:'flex', flexDirection:'column', position:'relative' }}>
-      <video ref={videoRef} style={{ position:'absolute', opacity:0.3, width:'100%', height:'100%', objectFit:'cover' }} playsInline muted />
+      <video ref={videoRef} style={{ position:'absolute', opacity:0.4, width:'100%', height:'100%', objectFit:'cover' }} playsInline muted autoPlay />
       <div style={{ position:'relative', zIndex:10, flex:1, display:'flex', flexDirection:'column', padding:24, justifyContent:'space-between' }}>
         <div>
           <p style={{ margin:'0 0 4px', opacity:0.7, fontSize:13 }}>Screening</p>
@@ -236,9 +252,12 @@ function ScreenInner() {
         </div>
         <div style={{ background:'rgba(255,255,255,0.1)', borderRadius:20, padding:24, backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,0.15)' }}>
           <h3 style={{ margin:'0 0 16px', fontSize:18, fontWeight:700 }}>How to position</h3>
-          {['📏 Extend your arm straight out','📱 Hold phone 40-60cm away','💡 Ensure good lighting','🎯 Show full arm: shoulder to wrist'].map((s,i) => (
-            <div key={i} style={{ fontSize:14, lineHeight:1.6, marginBottom:8 }}>{s}</div>
-          ))}
+          {[
+            '📏 Extend arm straight out to the side',
+            '📱 Hold phone 40-60cm from arm',
+            '💡 Ensure good lighting on the arm',
+            '🎯 Show full arm: shoulder to wrist in frame',
+          ].map((s,i) => <div key={i} style={{ fontSize:14, lineHeight:1.7, marginBottom:6 }}>{s}</div>)}
         </div>
         <button className="btn-primary" onClick={startScanning}>Start Scanning →</button>
       </div>
@@ -248,11 +267,11 @@ function ScreenInner() {
   if (phase === 'scanning' || phase === 'stable') return (
     <div style={{ background:'#000', minHeight:'100dvh', position:'relative', overflow:'hidden' }}>
       <canvas ref={canvasRef} style={{ width:'100%', height:'100%', objectFit:'cover', position:'absolute', inset:0 }} />
-      <video ref={videoRef} style={{ display:'none' }} playsInline muted />
+      <video ref={videoRef} style={{ display:'none' }} playsInline muted autoPlay />
       <div style={{ position:'absolute', top:0, left:0, right:0, background:'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)', padding:'20px 20px 40px', color:'white', zIndex:20 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <p style={{ margin:0, fontWeight:600 }}>{armDetected ? '✅ Arm detected' : '🔍 Looking for arm...'}</p>
-          <div style={{ background: armDetected?'rgba(34,197,94,0.3)':'rgba(255,255,255,0.15)', border:`1px solid ${armDetected?'#22c55e':'rgba(255,255,255,0.3)'}`, borderRadius:20, padding:'6px 14px', fontSize:13, fontWeight:600 }}>
+          <div style={{ background:armDetected?'rgba(34,197,94,0.3)':'rgba(255,255,255,0.15)', border:`1px solid ${armDetected?'#22c55e':'rgba(255,255,255,0.3)'}`, borderRadius:20, padding:'6px 14px', fontSize:13, fontWeight:600 }}>
             {Math.round(confidence*100)}%
           </div>
         </div>
@@ -308,7 +327,9 @@ function ScreenInner() {
         <button className="btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? <div className="spinner" /> : '💾 Save Record'}
         </button>
-        <button className="btn-secondary" onClick={() => { sp('scanning'); processFrame(); }}>Retake Reading</button>
+        <button className="btn-secondary" onClick={() => { sp('scanning'); processFrame(); }}>
+          Retake Reading
+        </button>
       </div>
     </div>
   );
@@ -337,4 +358,6 @@ function ScreenInner() {
   return null;
 }
 
-export default function ScreenPage()  { return <Suspense><ScreenInner /></Suspense>; }
+export default function ScreenPage() {
+  return <Suspense><ScreenInner /></Suspense>;
+}
