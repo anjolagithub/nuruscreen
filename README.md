@@ -2,7 +2,7 @@
 
 **AI-powered malnutrition screening for community health workers — works completely offline.**
 
-<!> Built for the UNICEF Venture Fund Climate Innovation Call 2025 by a Nigerian founder, for Nigerian field conditions.-->
+
 
 ---
 
