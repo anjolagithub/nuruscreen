@@ -1,7 +1,17 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  turbopack: {
+    root: __dirname,
+  },
+  headers: async () => [
+    {
+      source: '/(.*)',
+      headers: [
+        { key: 'Service-Worker-Allowed', value: '/' },
+      ],
+    },
+  ],
 };
 
 export default nextConfig;

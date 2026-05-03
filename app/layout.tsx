@@ -20,7 +20,11 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${dmSans.variable} ${dmMono.variable}`}>
-      <body><AuthProvider>{children}</AuthProvider></body>
+      <body>
+        <script dangerouslySetInnerHTML={{
+  __html: `if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');`
+}} />
+        <AuthProvider>{children}</AuthProvider></body>
     </html>
   );
 }
