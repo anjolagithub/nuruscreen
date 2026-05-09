@@ -10,6 +10,7 @@ export const metadata: Metadata = {
   title: 'NuruScreen — Child Malnutrition Screening',
   description: 'AI-powered malnutrition screening for community health workers. Works offline.',
   manifest: '/manifest.json',
+  icons: { icon: '/logo.svg', apple: '/logo.svg' },
   appleWebApp: { capable: true, statusBarStyle: 'default', title: 'NuruScreen' },
 };
 
