@@ -9,15 +9,49 @@ import {
 } from '@/types';
 
 type Phase = 'select-child'|'loading-model'|'guide'|'scanning'|'stable'|'result'|'saved';
+type ArmOrientation = 'horizontal' | 'vertical';
 
 function getWorker() {
   try { return JSON.parse(localStorage.getItem('nuruscreen_worker_data') || 'null'); } catch { return null; }
 }
 
-// ── Ghost overlay SVG — shows health worker exactly where to place the arm ──
-function ArmGuideOverlay({ armDetected }: { armDetected: boolean }) {
-  const strokeColor = armDetected ? '#22c55e' : 'rgba(255,255,255,0.7)';
-  const dotColor    = armDetected ? '#22c55e' : 'rgba(255,255,255,0.5)';
+// ── Arm guide overlay — supports both horizontal and vertical arm positions ──
+function ArmGuideOverlay({
+  armDetected,
+  orientation,
+  onToggle,
+}: {
+  armDetected: boolean;
+  orientation: ArmOrientation;
+  onToggle: () => void;
+}) {
+  const stroke  = armDetected ? '#22c55e' : 'rgba(255,255,255,0.75)';
+  const dotFill = armDetected ? '#22c55e' : 'rgba(255,255,255,0.5)';
+
+  // Horizontal: arm extended sideways (recommended — wider ellipse)
+  // Vertical:   arm hanging down (narrow tall ellipse)
+  const cx = 195, cy = 422;
+  const rx = orientation === 'horizontal' ? 148 : 52;
+  const ry = orientation === 'horizontal' ? 58  : 160;
+
+  // Corner markers adapt to ellipse bounding box
+  const x1 = cx - rx, x2 = cx + rx;
+  const y1 = cy - ry, y2 = cy + ry;
+  const cm = 24; // corner marker length
+
+  const corners = [
+    [[x1, y1+cm], [x1, y1], [x1+cm, y1]],
+    [[x2-cm, y1], [x2, y1], [x2, y1+cm]],
+    [[x1, y2-cm], [x1, y2], [x1+cm, y2]],
+    [[x2-cm, y2], [x2, y2], [x2, y2-cm]],
+  ];
+
+  const labelY = y2 + 30;
+  const subLabelY = y2 + 50;
+
+  const horizontalHint = 'shoulder ←──── upper arm ────→ wrist';
+  const verticalHint   = 'shoulder\n    ↑\nupper arm\n    ↑\n wrist';
+
   return (
     <svg
       style={{ position:'absolute', inset:0, width:'100%', height:'100%', zIndex:6, pointerEvents:'none' }}
@@ -27,79 +61,167 @@ function ArmGuideOverlay({ armDetected }: { armDetected: boolean }) {
       <defs>
         <mask id="arm-guide-mask">
           <rect width="390" height="844" fill="white"/>
-          {/* Arm-shaped ellipse cut out of the dark overlay */}
-          <ellipse cx="195" cy="422" rx="148" ry="62" fill="black"/>
+          <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="black"/>
         </mask>
       </defs>
 
-      {/* Dark surround — focuses attention on the arm zone */}
-      <rect
-        width="390" height="844"
-        fill="rgba(0,0,0,0.52)"
-        mask="url(#arm-guide-mask)"
-      />
+      {/* Dark surround with arm-cutout */}
+      <rect width="390" height="844" fill="rgba(0,0,0,0.50)" mask="url(#arm-guide-mask)"/>
 
-      {/* Dashed guide ellipse — changes colour when arm detected */}
-      <ellipse
-        cx="195" cy="422" rx="148" ry="62"
-        fill="none"
-        stroke={strokeColor}
-        strokeWidth="2.5"
-        strokeDasharray="9 5"
-      />
+      {/* Guide ellipse */}
+      <ellipse cx={cx} cy={cy} rx={rx} ry={ry}
+        fill="none" stroke={stroke} strokeWidth="2.5" strokeDasharray="9 5"/>
 
-      {/* Centre measurement dot — shows where MUAC is measured */}
-      <circle cx="195" cy="422" r="7" fill={dotColor}/>
-      {/* Crosshair lines */}
-      <line x1="175" y1="422" x2="215" y2="422" stroke={strokeColor} strokeWidth="1.5" opacity="0.6"/>
-      <line x1="195" y1="402" x2="195" y2="442" stroke={strokeColor} strokeWidth="1.5" opacity="0.6"/>
+      {/* MUAC measurement point (mid upper arm) */}
+      <circle cx={cx} cy={cy} r={7} fill={dotFill}/>
+      <line x1={cx-18} y1={cy} x2={cx+18} y2={cy} stroke={stroke} strokeWidth="1.5" opacity="0.6"/>
+      <line x1={cx} y1={cy-18} x2={cx} y2={cy+18} stroke={stroke} strokeWidth="1.5" opacity="0.6"/>
 
-      {/* Corner markers — reinforce the guide boundary */}
-      {[
-        [47, 380, 47, 360, 67, 360],
-        [343, 380, 343, 360, 323, 360],
-        [47, 464, 47, 484, 67, 484],
-        [343, 464, 343, 484, 323, 484],
-      ].map(([x1,y1,x2,y2,x3,y3], i) => (
-        <polyline key={i} points={`${x1},${y1} ${x2},${y2} ${x3},${y3}`}
-          fill="none" stroke={strokeColor} strokeWidth="2.5" strokeLinecap="round" opacity="0.8"/>
+      {/* Corner markers */}
+      {corners.map((pts, i) => (
+        <polyline key={i}
+          points={pts.map(([x,y]) => `${x},${y}`).join(' ')}
+          fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" opacity="0.85"/>
       ))}
 
-      {/* Instruction text — changes when arm detected */}
+      {/* Status text */}
       {!armDetected && (
         <>
-          <text x="195" y="514" textAnchor="middle" fill="white"
-            fontSize="14" fontFamily="sans-serif" fontWeight="500">
+          <text x={cx} y={labelY} textAnchor="middle"
+            fill="white" fontSize="14" fontFamily="sans-serif" fontWeight="500">
             Place upper arm inside the outline
           </text>
-          <text x="195" y="535" textAnchor="middle" fill="rgba(255,255,255,0.6)"
-            fontSize="12" fontFamily="sans-serif">
-            shoulder ←─────────────→ wrist
+          <text x={cx} y={subLabelY} textAnchor="middle"
+            fill="rgba(255,255,255,0.55)" fontSize="11" fontFamily="sans-serif">
+            {orientation === 'horizontal' ? horizontalHint : 'Arm hanging straight down'}
           </text>
         </>
       )}
       {armDetected && (
-        <text x="195" y="514" textAnchor="middle" fill="#22c55e"
-          fontSize="15" fontFamily="sans-serif" fontWeight="600">
+        <text x={cx} y={labelY} textAnchor="middle"
+          fill="#22c55e" fontSize="15" fontFamily="sans-serif" fontWeight="600">
           ✓ Arm detected — hold steady
         </text>
       )}
+
+      {/* Orientation toggle button — always tappable */}
+      <g
+        onClick={onToggle}
+        style={{ cursor:'pointer', pointerEvents:'all' }}
+        transform="translate(310, 30)"
+      >
+        <rect width="70" height="36" rx="8" fill="rgba(0,0,0,0.55)" stroke="rgba(255,255,255,0.3)" strokeWidth="1"/>
+        <text x="35" y="14" textAnchor="middle" fill="white" fontSize="9"
+          fontFamily="sans-serif" fontWeight="600" letterSpacing="0.05em">
+          ARM
+        </text>
+        <text x="35" y="27" textAnchor="middle" fill="rgba(255,255,255,0.8)" fontSize="10"
+          fontFamily="sans-serif">
+          {orientation === 'horizontal' ? '↔ horiz' : '↕ vert'}
+        </text>
+      </g>
     </svg>
   );
 }
 
+// ── Animated loading screen — field-worker friendly copy ──
+function LoadingScreen({ error, onRetry, onBack }: {
+  error: string | null;
+  onRetry: () => void;
+  onBack: () => void;
+}) {
+  const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    if (error) return;
+    const t = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500);
+    return () => clearInterval(t);
+  }, [error]);
+
+  return (
+    <div style={{
+      display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+      minHeight:'100dvh', gap:0, background:'var(--forest)', color:'white',
+      padding:24, textAlign:'center',
+    }}>
+      {!error && (
+        <>
+          {/* NuruScreen logo mark */}
+          <svg width="64" height="64" viewBox="0 0 64 64" style={{ marginBottom:24 }}>
+            <circle cx="32" cy="32" r="30" fill="rgba(255,255,255,0.12)"/>
+            <circle cx="32" cy="32" r="19" fill="none" stroke="rgba(255,255,255,0.6)"
+              strokeWidth="2" strokeDasharray="4 3"/>
+            <line x1="32" y1="16" x2="32" y2="48" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+            <line x1="16" y1="32" x2="48" y2="32" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+            <circle cx="32" cy="32" r="4" fill="#22c55e"/>
+          </svg>
+
+          <p style={{ margin:'0 0 6px', fontWeight:700, fontSize:20 }}>
+            Starting NuruScreen{dots}
+          </p>
+          <p style={{ margin:'0 0 32px', fontSize:13, opacity:0.65, lineHeight:1.5 }}>
+            Preparing AI screening tools
+          </p>
+
+          {/* Progress steps */}
+          {[
+            { label:'Loading pose model', done:true },
+            { label:'Activating camera', done:false },
+            { label:'Ready to screen', done:false },
+          ].map((step, i) => (
+            <div key={i} style={{
+              display:'flex', alignItems:'center', gap:10,
+              padding:'8px 0', width:'100%', maxWidth:240,
+              borderBottom: i < 2 ? '1px solid rgba(255,255,255,0.08)' : 'none',
+            }}>
+              <div style={{
+                width:20, height:20, borderRadius:'50%', flexShrink:0,
+                background: step.done ? '#22c55e' : 'rgba(255,255,255,0.15)',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                fontSize:11,
+              }}>
+                {step.done ? '✓' : <div style={{ width:10, height:10, border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'white', borderRadius:'50%', animation:'spin 0.8s linear infinite' }}/>}
+              </div>
+              <span style={{ fontSize:13, opacity: step.done ? 1 : 0.5 }}>{step.label}</span>
+            </div>
+          ))}
+
+          <p style={{ margin:'28px 0 0', fontSize:11, opacity:0.35 }}>
+            First load: ~30–60s · Then instant
+          </p>
+        </>
+      )}
+
+      {error && (
+        <div style={{ background:'rgba(220,38,38,0.18)', padding:'20px 24px', borderRadius:12, maxWidth:320 }}>
+          <p style={{ margin:'0 0 6px', fontWeight:700, fontSize:15 }}>⚠ Setup Error</p>
+          <p style={{ margin:'0 0 16px', fontSize:14, lineHeight:1.6, opacity:0.9, whiteSpace:'pre-line' }}>{error}</p>
+          <button onClick={onRetry}
+            style={{ padding:'12px 20px', background:'white', color:'var(--forest)', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', marginRight:10, fontSize:15 }}>
+            Retry
+          </button>
+          <button onClick={onBack}
+            style={{ padding:'12px 20px', background:'transparent', color:'white', border:'1px solid rgba(255,255,255,0.4)', borderRadius:8, fontWeight:600, cursor:'pointer', fontSize:15 }}>
+            Go Back
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScreenInner() {
-  const router = useRouter();
+  const router       = useRouter();
   const searchParams = useSearchParams();
 
-  const videoRef      = useRef<HTMLVideoElement>(null);
-  const canvasRef     = useRef<HTMLCanvasElement>(null);
-  const streamRef     = useRef<MediaStream|null>(null);
-  const poseRef       = useRef<any>(null);
-  const bufferRef     = useRef(new MUACReadingBuffer(12));
-  const animFrameRef  = useRef<number>(0);
-  const phaseRef      = useRef<Phase>('select-child');
-  const isRunningRef  = useRef(false);
+  const videoRef     = useRef<HTMLVideoElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const streamRef    = useRef<MediaStream|null>(null);
+  const poseRef      = useRef<any>(null);
+  const bufferRef    = useRef(new MUACReadingBuffer(12));
+  const animFrameRef = useRef<number>(0);
+  const phaseRef     = useRef<Phase>('select-child');
+  const isRunningRef = useRef(false);
 
   const [phase, setPhase]                 = useState<Phase>('select-child');
   const [children, setChildren]           = useState<Child[]>([]);
@@ -111,6 +233,7 @@ function ScreenInner() {
   const [notes, setNotes]                 = useState('');
   const [saving, setSaving]               = useState(false);
   const [modelError, setModelError]       = useState<string|null>(null);
+  const [orientation, setOrientation]     = useState<ArmOrientation>('horizontal');
 
   const sp = useCallback((p: Phase) => { phaseRef.current = p; setPhase(p); }, []);
 
@@ -174,22 +297,19 @@ function ScreenInner() {
           const eI = s==='left'?13:14, wI = s==='left'?15:16, shI = s==='left'?11:12;
           const lm = (i: number) => ({ x: landmarks[i].x * canvas.width, y: landmarks[i].y * canvas.height });
 
-          // Arm line
           ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
           ctx.beginPath();
           ctx.moveTo(lm(shI).x, lm(shI).y);
-          ctx.lineTo(lm(eI).x,  lm(eI).y);
-          ctx.lineTo(lm(wI).x,  lm(wI).y);
+          ctx.lineTo(lm(eI).x, lm(eI).y);
+          ctx.lineTo(lm(wI).x, lm(wI).y);
           ctx.stroke();
 
-          // MUAC midpoint circle
           const mx = (lm(shI).x + lm(eI).x) / 2;
           const my = (lm(shI).y + lm(eI).y) / 2;
           ctx.beginPath(); ctx.arc(mx, my, 16, 0, Math.PI*2);
           ctx.fillStyle = 'rgba(34,197,94,0.2)'; ctx.fill();
           ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 3; ctx.stroke();
 
-          // Joint dots
           [shI, eI, wI].forEach(i => {
             ctx.beginPath(); ctx.arc(lm(i).x, lm(i).y, 7, 0, Math.PI*2);
             ctx.fillStyle = '#22c55e'; ctx.fill();
@@ -209,12 +329,10 @@ function ScreenInner() {
     if (!isRunningRef.current) return;
     const video = videoRef.current;
     const pose  = poseRef.current;
-
     if (!video || !pose) { animFrameRef.current = requestAnimationFrame(processFrame); return; }
     if (video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || video.paused || video.ended) {
       animFrameRef.current = requestAnimationFrame(processFrame); return;
     }
-
     try {
       const results = pose.detectForVideo(video, performance.now());
       if (results.landmarks?.[0]) {
@@ -225,7 +343,6 @@ function ScreenInner() {
         if (canvas) canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
       }
     } catch (e) { console.error('Detection error:', e); }
-
     animFrameRef.current = requestAnimationFrame(processFrame);
   }, [onPoseResults]);
 
@@ -324,66 +441,59 @@ function ScreenInner() {
 
   return (
     <>
-      {/* ── PERSISTENT CAMERA LAYER — never unmounts, srcObject survives phase changes ── */}
+      {/* ── PERSISTENT CAMERA LAYER ── */}
       <div style={{
-        position: 'fixed', inset: 0,
+        position:'fixed', inset:0,
         zIndex: isCamera ? 0 : -1,
         opacity: isCamera ? 1 : 0,
         pointerEvents: isCamera ? 'auto' : 'none',
-        background: '#000',
+        background:'#000',
       }}>
-        <video
-          ref={videoRef}
+        <video ref={videoRef}
           style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover' }}
-          playsInline muted autoPlay
-        />
-        {/* Canvas: transparent overlay for skeleton landmarks */}
-        <canvas
-          ref={canvasRef}
-          style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none', zIndex:5 }}
-        />
+          playsInline muted autoPlay />
+        <canvas ref={canvasRef}
+          style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none', zIndex:5 }} />
 
-        {/* Ghost arm guide overlay — only during scanning phases */}
+        {/* Ghost overlay with orientation toggle */}
         {(phase === 'scanning' || phase === 'stable') && (
-          <ArmGuideOverlay armDetected={armDetected} />
+          <ArmGuideOverlay
+            armDetected={armDetected}
+            orientation={orientation}
+            onToggle={() => setOrientation(o => o === 'horizontal' ? 'vertical' : 'horizontal')}
+          />
         )}
 
-        {/* ── GUIDE phase ── */}
+        {/* Guide phase */}
         {phase === 'guide' && (
           <div style={{
             position:'absolute', inset:0, zIndex:10,
             display:'flex', flexDirection:'column',
-            padding:24, paddingBottom:48,
-            justifyContent:'space-between',
+            padding:24, paddingBottom:48, justifyContent:'space-between',
             background:'rgba(0,0,0,0.5)',
           }}>
             <div style={{ color:'white' }}>
               <p style={{ margin:'0 0 2px', opacity:0.7, fontSize:13, letterSpacing:'0.05em', textTransform:'uppercase' }}>Screening</p>
               <h2 style={{ margin:0, fontSize:22, fontWeight:700 }}>{selectedChild?.name}</h2>
             </div>
-
             <div style={{ background:'rgba(255,255,255,0.1)', borderRadius:16, padding:20, backdropFilter:'blur(12px)', border:'1px solid rgba(255,255,255,0.15)', color:'white' }}>
-              <h3 style={{ margin:'0 0 14px', fontSize:16, fontWeight:700, letterSpacing:'0.01em' }}>How to position</h3>
+              <h3 style={{ margin:'0 0 14px', fontSize:16, fontWeight:700 }}>How to position</h3>
               {[
                 '📏 Extend arm straight out to the side',
                 '📱 Hold phone 40–60 cm from the arm',
-                '💡 Good lighting — avoid shadows on arm',
-                '🎯 Show full arm: shoulder to wrist',
-              ].map((s,i) => (
-                <div key={i} style={{ fontSize:14, lineHeight:1.75, display:'flex', alignItems:'flex-start', gap:4 }}>{s}</div>
-              ))}
+                '💡 Good lighting — avoid shadows',
+                '🎯 Full arm visible: shoulder to wrist',
+              ].map((s,i) => <div key={i} style={{ fontSize:14, lineHeight:1.75 }}>{s}</div>)}
             </div>
-
             <button className="btn-primary" onClick={startScanning} style={{ fontSize:18 }}>
               Start Scanning →
             </button>
           </div>
         )}
 
-        {/* ── SCANNING / STABLE phase ── */}
+        {/* Scanning / Stable phase */}
         {(phase === 'scanning' || phase === 'stable') && (
           <>
-            {/* Top status bar */}
             <div style={{
               position:'absolute', top:0, left:0, right:0, zIndex:15,
               background:'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)',
@@ -403,7 +513,6 @@ function ScreenInner() {
               </div>
             </div>
 
-            {/* Bottom readings bar */}
             <div style={{
               position:'absolute', bottom:0, left:0, right:0, zIndex:15,
               background:'linear-gradient(to top, rgba(0,0,0,0.88), transparent)',
@@ -412,26 +521,20 @@ function ScreenInner() {
               {liveValue !== null && (
                 <div style={{ textAlign:'center', marginBottom:20 }}>
                   <div style={{ fontSize:60, fontWeight:700, lineHeight:1, fontFamily:'monospace' }}>
-                    {liveValue.toFixed(1)}
-                    <span style={{ fontSize:22, opacity:0.65, marginLeft:6 }}>cm</span>
+                    {liveValue.toFixed(1)}<span style={{ fontSize:22, opacity:0.65, marginLeft:6 }}>cm</span>
                   </div>
                   <p style={{ margin:'8px 0 0', fontSize:13, opacity:0.75 }}>
                     {bufferRef.current.isStable() ? '✅ Reading stable' : 'Hold steady...'}
                   </p>
                 </div>
               )}
-
               {phase === 'stable' && (
-                <button className="btn-primary" style={{ fontSize:17 }}
-                  onClick={() => { stopLoop(); sp('result'); }}>
+                <button className="btn-primary" style={{ fontSize:17 }} onClick={() => { stopLoop(); sp('result'); }}>
                   ✓ Confirm — {stableValue?.toFixed(1)} cm
                 </button>
               )}
               {phase === 'scanning' && (
-                <div style={{
-                  display:'flex', alignItems:'center', justifyContent:'center',
-                  gap:10, padding:16, background:'rgba(255,255,255,0.1)', borderRadius:12,
-                }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, padding:16, background:'rgba(255,255,255,0.1)', borderRadius:12 }}>
                   <div className="spinner" style={{ width:18, height:18, borderWidth:2 }}/>
                   <span style={{ fontSize:14 }}>Analysing arm position...</span>
                 </div>
@@ -443,7 +546,6 @@ function ScreenInner() {
 
       {/* ══ PAGE CONTENT ══ */}
 
-      {/* ── SELECT CHILD ── */}
       {phase === 'select-child' && (
         <div>
           <div className="page-header">
@@ -475,35 +577,14 @@ function ScreenInner() {
         </div>
       )}
 
-      {/* ── LOADING MODEL ── */}
       {phase === 'loading-model' && (
-        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', gap:16, background:'var(--forest)', color:'white', padding:24, textAlign:'center' }}>
-          {!modelError && (
-            <>
-              <div className="spinner"/>
-              <p style={{ margin:0, fontWeight:600, fontSize:16 }}>Loading AI model...</p>
-              <p style={{ margin:0, fontSize:13, opacity:0.7 }}>First use: 30–60s download</p>
-              <p style={{ margin:0, fontSize:12, opacity:0.5 }}>Subsequent loads are instant</p>
-            </>
-          )}
-          {modelError && (
-            <div style={{ background:'rgba(220,38,38,0.18)', padding:'20px 24px', borderRadius:12, maxWidth:320 }}>
-              <p style={{ margin:'0 0 6px', fontWeight:700, fontSize:15 }}>⚠ Setup Error</p>
-              <p style={{ margin:'0 0 16px', fontSize:14, lineHeight:1.6, opacity:0.9, whiteSpace:'pre-line' }}>{modelError}</p>
-              <button onClick={() => { setModelError(null); loadMediaPipe(); }}
-                style={{ padding:'12px 20px', background:'white', color:'var(--forest)', border:'none', borderRadius:8, fontWeight:700, cursor:'pointer', marginRight:10, fontSize:15 }}>
-                Retry
-              </button>
-              <button onClick={() => { stopCamera(); sp('select-child'); }}
-                style={{ padding:'12px 20px', background:'transparent', color:'white', border:'1px solid rgba(255,255,255,0.4)', borderRadius:8, fontWeight:600, cursor:'pointer', fontSize:15 }}>
-                Go Back
-              </button>
-            </div>
-          )}
-        </div>
+        <LoadingScreen
+          error={modelError}
+          onRetry={() => { setModelError(null); loadMediaPipe(); }}
+          onBack={() => { stopCamera(); sp('select-child'); }}
+        />
       )}
 
-      {/* ── RESULT ── */}
       {phase === 'result' && (
         <div style={{ position:'relative', zIndex:10, background:'white', minHeight:'100dvh' }}>
           <div className="page-header">
@@ -511,43 +592,25 @@ function ScreenInner() {
             <p style={{ margin:'4px 0 0', opacity:0.7, fontSize:14 }}>{selectedChild?.name}</p>
           </div>
           <div style={{ padding:'20px', display:'flex', flexDirection:'column', gap:14 }}>
-
-            {/* ── Main result banner — icon + word + colour (3 independent signals) ── */}
             <div style={{
-              padding:'24px 20px',
-              borderRadius:16,
-              textAlign:'center',
-              background: RISK_BG_COLORS[rl],
-              border:`3px solid ${RISK_BORDER_COLORS[rl]}`,
-              animation:'resultReveal 0.35s cubic-bezier(0.34,1.56,0.64,1)',
+              padding:'24px 20px', borderRadius:16, textAlign:'center',
+              background: RISK_BG_COLORS[rl], border:`3px solid ${RISK_BORDER_COLORS[rl]}`,
             }}>
-              {/* MUAC number */}
               <div style={{ fontFamily:'var(--font-mono)', fontSize:60, fontWeight:500, letterSpacing:'-0.02em', lineHeight:1, color: RISK_COLORS[rl] }}>
-                {stableValue?.toFixed(1)}
-                <span style={{ fontSize:24, opacity:0.7, marginLeft:6 }}>cm</span>
+                {stableValue?.toFixed(1)}<span style={{ fontSize:24, opacity:0.7, marginLeft:6 }}>cm</span>
               </div>
-
-              {/* Label: icon + word — colorblind safe */}
-              <p style={{ margin:'12px 0 4px', fontSize:20, fontWeight:700, color: RISK_COLORS[rl], letterSpacing:'0.01em' }}>
-                {RISK_LABELS[rl]}
-              </p>
-
-              {/* Action — plain language */}
-              <p style={{ margin:'4px 0 0', fontSize:14, fontWeight:500, color: RISK_COLORS[rl], opacity:0.85 }}>
-                {RISK_ACTIONS[rl]}
-              </p>
-
+              <p style={{ margin:'12px 0 4px', fontSize:20, fontWeight:700, color: RISK_COLORS[rl] }}>{RISK_LABELS[rl]}</p>
+              <p style={{ margin:'4px 0 0', fontSize:14, fontWeight:500, color: RISK_COLORS[rl], opacity:0.85 }}>{RISK_ACTIONS[rl]}</p>
               <p style={{ margin:'10px 0 0', fontSize:12, color:'var(--stone-400)' }}>WHO MUAC classification</p>
             </div>
 
-            {/* ── Threshold reference card — helps worker understand the scale ── */}
             <div className="card card-padded">
               <p className="form-label" style={{ marginBottom:10 }}>MUAC Reference Scale</p>
               <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                 {[
-                  { label:'✓  Well Nourished', range:'≥ 13.5 cm', bg:'#dcfce7', color:'#14532d', active: rl === 'green' },
-                  { label:'⚠  Moderate (MAM)', range:'11.5 – 13.5 cm', bg:'#fef3c7', color:'#92400e', active: rl === 'yellow' },
-                  { label:'!  Urgent — SAM',   range:'< 11.5 cm',  bg:'#fee2e2', color:'#991b1b', active: rl === 'red' },
+                  { label:'✓  Well Nourished', range:'≥ 13.5 cm', bg:'#dcfce7', color:'#14532d', active: rl==='green' },
+                  { label:'⚠  Moderate (MAM)', range:'11.5–13.5 cm', bg:'#fef3c7', color:'#92400e', active: rl==='yellow' },
+                  { label:'!  Urgent — SAM',   range:'< 11.5 cm',   bg:'#fee2e2', color:'#991b1b', active: rl==='red' },
                 ].map(r => (
                   <div key={r.label} style={{
                     display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -555,28 +618,18 @@ function ScreenInner() {
                     background: r.active ? r.bg : 'transparent',
                     border: r.active ? `2px solid ${r.color}` : '1px solid var(--stone-200)',
                   }}>
-                    <span style={{ fontSize:13, fontWeight: r.active ? 700 : 500, color: r.active ? r.color : 'var(--stone-600)' }}>
-                      {r.label}
-                    </span>
-                    <span style={{ fontSize:13, fontFamily:'var(--font-mono)', color: r.active ? r.color : 'var(--stone-400)' }}>
-                      {r.range}
-                    </span>
+                    <span style={{ fontSize:13, fontWeight: r.active ? 700 : 500, color: r.active ? r.color : 'var(--stone-600)' }}>{r.label}</span>
+                    <span style={{ fontSize:13, fontFamily:'var(--font-mono)', color: r.active ? r.color : 'var(--stone-400)' }}>{r.range}</span>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* ── Notes ── */}
             <div>
               <label className="form-label">Notes (optional)</label>
-              <textarea
-                className="form-input" rows={3}
-                placeholder="Observations about this child..."
-                value={notes} onChange={e => setNotes(e.target.value)}
-                style={{ resize:'none', fontSize:16 }}
-              />
+              <textarea className="form-input" rows={3} placeholder="Observations about this child..."
+                value={notes} onChange={e => setNotes(e.target.value)} style={{ resize:'none', fontSize:16 }} />
             </div>
-
             <button className="btn-primary" onClick={handleSave} disabled={saving}>
               {saving ? <div className="spinner"/> : '💾 Save Record'}
             </button>
@@ -587,7 +640,6 @@ function ScreenInner() {
         </div>
       )}
 
-      {/* ── SAVED ── */}
       {phase === 'saved' && (
         <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100dvh', padding:32, textAlign:'center', background:'white', position:'relative', zIndex:10 }}>
           <div style={{ width:80, height:80, borderRadius:'50%', background:'#dcfce7', display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, marginBottom:24 }}>✅</div>
@@ -599,9 +651,7 @@ function ScreenInner() {
             sp('select-child'); setSelectedChild(null);
             setLiveValue(null); setStableValue(null);
             setNotes(''); bufferRef.current.reset();
-          }}>
-            Screen Another Child
-          </button>
+          }}>Screen Another Child</button>
           <button className="btn-secondary" style={{ maxWidth:300, marginTop:10 }} onClick={() => router.push('/dashboard')}>
             Back to Dashboard
           </button>

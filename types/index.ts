@@ -1,15 +1,20 @@
 export type RiskLevel = 'green' | 'yellow' | 'red' | 'unknown';
+
+// ClimateContext is now an ARRAY — a child can be flood-affected AND displaced simultaneously
 export type ClimateContext = 'flood' | 'drought' | 'displacement' | 'heatwave' | 'none';
+export type ClimateContexts = ClimateContext[];
 
 export interface Child {
   id: string; name: string; ageMonths: number; sex: 'male' | 'female';
-  village: string; lga: string; state: string; climateContext: ClimateContext;
+  village: string; lga: string; state: string;
+  climateContexts: ClimateContexts; // was climateContext (single), now array
   createdAt: number; healthWorkerId: string;
 }
 
 export interface Screening {
   id: string; childId: string; muacCm: number; riskLevel: RiskLevel;
-  notes: string; screenedAt: number; healthWorkerId: string; synced: boolean; imageDataUrl?: string;
+  notes: string; screenedAt: number; healthWorkerId: string;
+  synced: boolean; imageDataUrl?: string;
 }
 
 export interface HealthWorker { id: string; name: string; facility: string; phone: string; }
@@ -23,7 +28,6 @@ export function classifyMUAC(muacCm: number): RiskLevel {
 }
 
 // Icon + word + colour — three independent signals for colorblind safety
-// Works at any screen brightness, in direct sunlight, for low-literacy workers
 export const RISK_LABELS: Record<RiskLevel, string> = {
   green:   '✓  WELL NOURISHED',
   yellow:  '⚠  MODERATE — MAM',
@@ -31,7 +35,6 @@ export const RISK_LABELS: Record<RiskLevel, string> = {
   unknown: '?  Unable to Read',
 };
 
-// Subtitle shown below the label — plain language action
 export const RISK_ACTIONS: Record<RiskLevel, string> = {
   green:   'Re-screen in 3 months',
   yellow:  'Enrol in supplementary feeding programme',
@@ -40,9 +43,9 @@ export const RISK_ACTIONS: Record<RiskLevel, string> = {
 };
 
 export const RISK_COLORS: Record<RiskLevel, string> = {
-  green:   '#14532d',  // darker green — better contrast on light bg
-  yellow:  '#92400e',  // darker amber — better contrast on light bg
-  red:     '#991b1b',  // darker red — better contrast on light bg
+  green:   '#14532d',
+  yellow:  '#92400e',
+  red:     '#991b1b',
   unknown: '#44403c',
 };
 
@@ -65,5 +68,12 @@ export const CLIMATE_LABELS: Record<ClimateContext, string> = {
   drought:      '☀️ Drought Affected',
   displacement: '🏕️ Displaced',
   heatwave:     '🌡️ Heatwave Affected',
-  none:         'No Climate Event',
+  none:         '✓ No Climate Event',
 };
+
+// Helper: format climate contexts array for display
+export function formatClimateContexts(contexts: ClimateContexts): string {
+  if (!contexts || contexts.length === 0) return 'None';
+  if (contexts.includes('none')) return 'No Climate Event';
+  return contexts.map(c => CLIMATE_LABELS[c]).join(', ');
+}
