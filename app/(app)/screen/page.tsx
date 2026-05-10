@@ -104,22 +104,6 @@ function ArmGuideOverlay({
         </text>
       )}
 
-      {/* Orientation toggle button — always tappable */}
-      <g
-        onClick={onToggle}
-        style={{ cursor:'pointer', pointerEvents:'all' }}
-        transform="translate(310, 30)"
-      >
-        <rect width="70" height="36" rx="8" fill="rgba(0,0,0,0.55)" stroke="rgba(255,255,255,0.3)" strokeWidth="1"/>
-        <text x="35" y="14" textAnchor="middle" fill="white" fontSize="9"
-          fontFamily="sans-serif" fontWeight="600" letterSpacing="0.05em">
-          ARM
-        </text>
-        <text x="35" y="27" textAnchor="middle" fill="rgba(255,255,255,0.8)" fontSize="10"
-          fontFamily="sans-serif">
-          {orientation === 'horizontal' ? '↔ horiz' : '↕ vert'}
-        </text>
-      </g>
     </svg>
   );
 }
@@ -457,11 +441,43 @@ function ScreenInner() {
 
         {/* Ghost overlay with orientation toggle */}
         {(phase === 'scanning' || phase === 'stable') && (
-          <ArmGuideOverlay
-            armDetected={armDetected}
-            orientation={orientation}
-            onToggle={() => setOrientation(o => o === 'horizontal' ? 'vertical' : 'horizontal')}
-          />
+          <>
+            <ArmGuideOverlay
+              armDetected={armDetected}
+              orientation={orientation}
+              onToggle={() => setOrientation(o => o === 'horizontal' ? 'vertical' : 'horizontal')}
+            />
+            {/* Toggle button as real HTML — never clipped, always tappable */}
+            <button
+              onClick={() => setOrientation(o => o === 'horizontal' ? 'vertical' : 'horizontal')}
+              style={{
+                position: 'absolute',
+                top: 16,
+                right: 16,
+                zIndex: 20,
+                background: 'rgba(0,0,0,0.6)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: 10,
+                padding: '8px 14px',
+                color: 'white',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 1,
+                lineHeight: 1.3,
+              }}
+            >
+              <span style={{ fontSize: 16 }}>
+                {orientation === 'horizontal' ? '↔' : '↕'}
+              </span>
+              <span style={{ fontSize: 10, opacity: 0.8, letterSpacing: '0.04em' }}>
+                {orientation === 'horizontal' ? 'HORIZ' : 'VERT'}
+              </span>
+            </button>
+          </>
         )}
 
         {/* Guide phase */}
