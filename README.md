@@ -85,7 +85,7 @@ NuruScreen is designed as a **digital public good**. Any health ministry, NGO, o
 ## Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/nuruscreen
+git clone https://github.com/anjolagithub/nuruscreen
 cd nuruscreen
 npm install
 npm run dev
